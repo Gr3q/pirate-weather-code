@@ -104,7 +104,7 @@ Trimming a model means removing, in `pirate-compose_oph.local.yml`:
 
 Which models cover which region is documented in [`docs/forecast-source-selection/README.md`](forecast-source-selection/README.md). Note that several ingest scripts (`DWD_Mosmix`, `GDPS`, `GEPS`, `HRDPS`, `REPS`, `SILAM`, `RAQDPS`, `URMA`, `AIGFS`, `AIGEFS`, `ECMWF_AIFS`) exist in `API/` but have **no compose service** — `API/DWD_Mosmix_Local_Ingest.py` is the natural addition for European users and can be wired by copying any existing service block.
 
-`API/WMO_Alerts_Local.py` is wired into all local compose files as `wmo_alerts_ingest` (see [Requirements and constraints](#requirements-and-constraints) — the alerts store is required). The API image layout is already wired correctly in the compose files here: the repository root is mounted at `/app` and the module path is `API.responseLocal:app`. If you write your own service definition, mount the repo root over `/app` rather than only the `API/` directory.
+`API/WMO_Alerts_Local.py` is wired into all local compose files as `wmo_alerts_ingest`. The API image layout is already wired correctly in the compose files here: the repository root is mounted at `/app` and the module path is `API.responseLocal:app`. If you write your own service definition, mount the repo root over `/app` rather than only the `API/` directory.
 
 ## Running only the API (response development)
 
@@ -181,12 +181,6 @@ http://<host>:8083/forecast/<apikey>/<lat>,<lon>
 ## Requirements and constraints
 
 Behaviors of the current code that constrain how a local instance must be set up, with workarounds where they exist.
-
-### Alerts store is required
-
-The API reads the WMO alerts array without a guard for missing stores, so without a `WMO_Alerts.zarr` store every `/forecast` request fails with a 500 (`'NoneType' object is not subscriptable` in `grid_indexing.py`). The compose files run `API/WMO_Alerts_Local.py` as `wmo_alerts_ingest` for this reason — link its store like any model store after the first cycle; it completes in about a minute and provides global alerts. With zero model stores ingested, requests return a 400 ("No forecast model sources are available").
-
-Workaround without alerts: `?exclude=alerts` skips the alerts read, but standard clients do not send it by default.
 
 ### Work and Weather roots must share a mount point
 
