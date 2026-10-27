@@ -178,8 +178,26 @@ http://<host>:8083/forecast/<apikey>/<lat>,<lon>
 - **API starts but returns empty or errors** — the stores weren't present (or weren't linked) when the container started. Fix the layout, then restart the container; stores are only loaded at startup.
 - **`<MODEL> not found` log lines at startup** — normal if you intentionally didn't ingest that model; the API falls back to the sources you do have.
 - **Requests fail with a missing-ETOPO error** — set `use_etopo=FALSE` (note the lowercase name; `useETOPO` is silently ignored) or provide the ETOPO store in `save_dir`.
-- **Every request returns 500 with a `wmo_alerts ... 'NoneType' object is not subscriptable` traceback** — alerts are treated as a required store: the API reads the WMO alerts array without a guard for missing stores. Run the WMO alerts ingest (`API/WMO_Alerts_Local.py`) and link its store like any model store. Zero ingested models instead produces a 400 ("No forecast model sources are available").
-- **Ingest fails with `OSError: [Errno 18] Invalid cross-device link` on `os.rename`** — the historic-loop ingest scripts rename the temp Zarr from the Work volume to the Weather volume; Docker bind mounts are distinct mount points even on the same disk, so `os.rename` fails across them. Workaround: both roots on the same filesystem does **not** help; either mount Work and Weather as one directory tree (Work nested inside Weather) or replace the `os.rename(...)` calls with `shutil.move(...)` (see discussion #650).
-- **Ingest logs `Expected N downloaded ... paths but got N-1` and sits idle** — a Herbie batch download came up one or more files short; the validator treats the whole batch as failed and retries from scratch. Attempts, sleep and backoff are controlled by `herbie_download_retries` and `herbie_retry_sleep_seconds`. Single missing forecast-hours are not retried individually.
-- **The API container crash-loops with `ModuleNotFoundError: No module named 'API'`** — the API image expects the repository layout at `/app` (module path `API.responseLocal:app`). Mount the repo root over `/app`, not the `API/` directory itself, and keep the image's default module path.
-- **Ingest services with no output for a while** — check `docker stats`: active downloading shows high container NET I/O, idle CPU with steady memory means a retry backoff window, not a hang.
+- **Ingest services with no output for a while** — check `docker stats`: active downloading shows high container NET I/O; idle CPU with steady memory means a retry backoff window, not a hang.
+
+## Requirements and constraints
+
+Behaviors of the current code that constrain how a local instance must be set up, with workarounds where they exist.
+
+### Alerts store is required
+
+The API reads the WMO alerts array without a guard for missing stores, so without a `WMO_Alerts.zarr` store every `/forecast` request fails with a 500 (`'NoneType' object is not subscriptable` in `grid_indexing.py`). Run `API/WMO_Alerts_Local.py` and link its store like any model store — it completes in about a minute and provides global alerts. With zero model stores ingested, requests return a 400 ("No forecast model sources are available").
+
+Workaround without alerts: `?exclude=alerts` skips the alerts read, but standard clients do not send it by default.
+
+### Work and Weather roots must share a mount point
+
+The historic-loop ingest scripts move the temp Zarr from the Work volume to the Weather volume with `os.rename`, which fails across distinct mount points (`OSError: [Errno 18] Invalid cross-device link`) even when both are on the same physical disk — Docker bind mounts are separate mount points regardless of the underlying filesystem. Nest the Work root inside the Weather root (single mount; see [Storage layout note](#storage-layout-note)) or replace the `os.rename` calls with `shutil.move` (the approach used in discussion #650).
+
+### Herbie downloads retry whole batches
+
+The GRIB download validator treats a batch as failed when it is short by even one file ("Expected N downloaded ... paths but got N-1"), and the retry re-downloads the entire batch rather than only the missing files. Attempts and backoff are controlled by `herbie_download_retries` and `herbie_retry_sleep_seconds`; a persistently incomplete upstream file can stall a model for the full retry budget. A single retry cycle takes on the order of tens of minutes for GFS.
+
+### API image layout: repo root at /app
+
+The API image expects the repository root at `/app` and serves `API.responseLocal:app`. Mount the repo root over `/app` to run the checked-out code; mounting only the `API/` directory breaks the import path (`ModuleNotFoundError: No module named 'API'`). The compose files in this repository are wired accordingly.
