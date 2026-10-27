@@ -24,18 +24,7 @@ At a high level, a conceptual overview of this service is described on the [blog
 - Docker container instead of response generation (front-end).
 - Removal of the Kong/ AWS API gateway requirement
 
-To run the service, clone this repository to a machine, edit the [docker compose file](https://github.com/Pirate-Weather/pirate-weather-code/blob/main/pirate-compose_oph) to match local paths and bring it up! The key variables to change in the compose script are the volumes, since by default they are mapped to the directory structure I use on AWS. In particular:
-- `/mnt/nvme:/tmp:rw` is the path to where model data will be processed and stored;
-- `/mnt/efs/scripts:/mnt:ro` is the path to where the python scripts are stored. 
-
-Several environmental variables are also used to control the API, including:
-- `wgrib2_path`: Where WGRIB2 is saved. Do not change;
-- `forecast_process_path`: Where forecast data should be saved during processing;
-- `hist_process_path`: Where short term (~36h) historic data should be saved during processing;
-- `merge_process_dir`: Where merged datasets should be saved;
-- `tmp_dir`: Where downloaded data should be saved;
-- `save_type`: If data should be saved to S3 (`S3`) or locally (`Download`).
-- `save_path`: Where the ingested data should be saved.
+To run the service, clone this repository to a machine and follow the [self-hosting guide](docs/SELF_HOSTING.md), which walks through building the images, running the local compose file (`pirate-compose_oph.local.yml`), and connecting the ingest output to the API. The key host paths are controlled by environment variables (`PW_WEATHER_ROOT`, `PW_WORK_ROOT`) in the compose files, and the ingest/output variables are documented in the guide's [environment variable reference](docs/SELF_HOSTING.md#environment-variables).
 
 The initial `docker compose up` command will take some time (~1 hour), as the initial batch of models is downloaded, processed and saved. From there, [Ofelia](https://github.com/mcuadros/ofelia) is used to schedule additional data ingest runs, while the `api_server` container responds to requests (Ex. `curl 127.0.0.1:8083/forecast/abc123/45,-75`)!
 
@@ -132,7 +121,7 @@ claude mcp add --transport http pirate-weather "https://mcp.pirateweather.net/mc
 Claude docs: [Custom connectors using remote MCP](https://support.anthropic.com/en/articles/11175166-getting-started-with-custom-integrations-using-remote-mcp), [Building custom connectors via remote MCP](https://support.anthropic.com/en/articles/11503834-building-custom-integrations-via-remote-mcp-servers), and [Claude Code MCP setup](https://docs.anthropic.com/en/docs/claude-code/mcp).
 
 ### Local SSD Ingest (No Pirate Weather API Key)
-If your goal is to download and keep as much raw model data locally as possible, use the local Ofelia compose template with `save_type=Download`:
+If your goal is to download and keep as much raw model data locally as possible — or to run your own forecast API — use the local Ofelia compose template with `save_type=Download`:
 
 ```
 pirate-compose_oph.local.yml
@@ -160,6 +149,8 @@ docker compose -f pirate-compose_oph.local.yml up -d
 
 This runs local ingest jobs and writes output under the SSD-backed `Weather` and `Work` folders without requiring `PW_API`.
 
+The full walkthrough — including the required step to connect the ingest output to an API server, running a regional subset (`pirate-compose_oph.local.uk.yml`, UK example), and troubleshooting — is in the [self-hosting guide](docs/SELF_HOSTING.md).
+
 **Filesystem note (Ubuntu/Linux):** prefer `ext4` for `PW_WEATHER_ROOT` and `PW_WORK_ROOT`. Large ingest runs are significantly faster and more reliable on `ext4` than `NTFS` mounts.
 
 ## Development
@@ -168,6 +159,8 @@ For additional details on contributing to this project, check out the [docs fold
 ### Requirements
 Running a weather API for the entire planet isn't a trivial task, and accordingly, this service requires a pretty hefty set of resources, although I hope to reduce this in the future! At least 32 GB of free (not total) memory are required for the ingest processing, as well as at least 200 GB of working disk space. The docker images are also ARM only at the moment, but there's no technical reason why they shouldn't generate on x64 machines as well. 
 However, the response script/container is significantly lighter, requiring only a vanilla Python/ Node environment, minimal memory, and ~50 GB of space.
+
+These requirements scale down with regional subsets — see the [self-hosting guide](docs/SELF_HOSTING.md) for per-component details and a UK-only example.
 
 ### Response Dev Tooling Setup
 The most interesting part of this project is the response script, which takes the raw model data and generates the API response. While spinning up the entire API is one way to work on this, it's much easier to simply run either the docker container or a virtual Python environment and use the existing zip files!
@@ -178,7 +171,7 @@ Two options are available to do this via Docker- either download a static copy o
 For Option 1:
 
 ```
-docker run -e STAGE=TESTING -e PW_API=<APIKEY> -e save_type=S3 -p 8000:8000 public.ecr.aws/j9v4j3c7/pirate-alpine-zarr:dev responseLocal:app --host 0.0.0.0 --port 8000 
+docker run -e STAGE=TESTING -e PW_API=<APIKEY> -e save_type=S3 -p 8083:8083 public.ecr.aws/j9v4j3c7/pirate-alpine-zarr:dev responseLocal:app --host 0.0.0.0 --port 8083 
 
 curl 127.0.0.1:8083/forecast/123456/45.4215,-75.6972
 ```
@@ -188,29 +181,10 @@ To make changes to the underlying code, a docker volume can be mounted over of t
 ```
 git clone https://github.com/Pirate-Weather/pirate-weather-code.git
 
-docker run -e STAGE=TESTING -e PW_API=<APIKEY> -p 8000:8000 -v ~/pirate-weather-code/API:/app public.ecr.aws/j9v4j3c7/pirate-alpine-zarr:dev responseLocal:app --host 0.0.0.0 --port 8000 
-```
-  
-For Option 2:
-
-```
-git clone https://github.com/Pirate-Weather/pirate-weather-code.git
-
-wget https://files.alexanderrey.ca/api/public/dl/9jMgSLpi
-unzip 9jMgSLpi -d ~/pw-data
-
-docker run -d -p 8083:8083 -v ~/pirate-weather-code/API:/app -v ~/pw-data:/tmp -e "STAGE=TESTING" -e "useETOPO=FALSE" -e "TIMING=TRUE" -e "save_type=Download" -e "force_now=1730869200" --workdir=/efs public.ecr.aws/j9v4j3c7/pirate-alpine-zarr:dev responseLocal:app --host 0.0.0.0 --port 8083
-
-curl 127.0.0.1:8083/forecast/123456/47.1756,27.594,1730869200
+docker run -e STAGE=TESTING -e PW_API=<APIKEY> -p 8083:8083 -v ~/pirate-weather-code/API:/app public.ecr.aws/j9v4j3c7/pirate-alpine-zarr:dev responseLocal:app --host 0.0.0.0 --port 8083 
 ```
 
-In either case, the dockerfiles to build the underlying images are [available](https://github.com/Pirate-Weather/pirate-weather-code/tree/dev/Docker), allowing the image to be rebuilt as well. This is helpful for adding additional Python packages or updating versions. 
-
-**Note:** 
-- Because the model files are a static snapshot, the time parameter (around Wed Nov 06 2024) must be used!
-- The container will initially not do anything, since FastAPI doesn't appear to pass along the logs until it's initialized. It should be up and running within ~5 minutes 
-
-This setup disables all the file updating processes within the response script and reads the data directly from the Zarr zip stores, focusing on the response. 
+The `TESTING` stage reads the production Zarr stores directly over S3, so no local data or snapshot download is needed. For running the full local stack against your own ingested data, see the [self-hosting guide](docs/SELF_HOSTING.md).
 
 #### VirtualEnv
 The other alternative is to setup a Python environment following the same process the dockerfile does. There's now a [handy script for this](https://github.com/Pirate-Weather/pirate-weather-code/blob/dev/scripts/setup_ingest_test_env) in the repository, which runs assuming that `python3.14`, `python3.14-dev`, and `build-essentials` are installed on the system. It's been tested on Ubuntu, but should work on other distributions. 

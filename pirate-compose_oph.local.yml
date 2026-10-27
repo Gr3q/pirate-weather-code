@@ -293,38 +293,27 @@ services:
         condition: service_completed_successfully
 
   # Consistently running API server
-#  api_server:
-#    image: public.ecr.aws/j9v4j3c7/pirate-alpine-zarr:latest
-#    ports:
-#      - "8083:8083"
-#    volumes:
-#      - efs/scripts:/efs:ro
-#      - nvme/Prod:/tmp
-#      - nvme/Temp:/ebs
-#      - nvme/Data:/data:ro
-#    environment:
-#      STAGE: "PROD"
-#      useETOPO: "False"
-#      s3_bucket: "/data"
-#      TIMING: "TRUE"
-#      save_type: "Download"
-#    entrypoint: "uvicorn"  
-#    working_dir: "/efs"
-#    command: ["responseLocal:app", "--host", "0.0.0.0", "--port", "8083"]
-#    depends_on:
-#      gfs_ingest:
-#        condition: service_completed_successfully
-#      nbm_ingest:
-#        condition: service_completed_successfully
-#      subh_ingest:
-#        condition: service_completed_successfully
-#      gefs_ingest:
-#        condition: service_completed_successfully
-#      hrrr_ingest:
-#        condition: service_completed_successfully
-#      hrrr_6h_ingest:
-#        condition: service_completed_successfully
-#      nws_alerts_ingest:
-#        condition: service_completed_successfully    
-#      ecmwf_ingest:
-#        condition: service_completed_successfully  
+  # Reads the Zarr stores written by the ingest jobs from save_dir (the Weather root).
+  # Stores load once at startup — restart this container after the first ingest cycle.
+  # See docs/SELF_HOSTING.md for the store layout and the symlink bridging step.
+  api_server:
+    image: pirate-zarr-api:latest
+    build:
+      context: .
+      dockerfile: Docker/pirate-api-dockerfile
+    container_name: pirate-api
+    ports:
+      - "8083:8083"
+    volumes:
+      - ./API:/app
+      - ${PW_WEATHER_ROOT:-/mnt/pirate-weather/Weather}:/data:ro
+    environment:
+      STAGE: "PROD"
+      save_type: "Download"
+      save_dir: "/data"
+      use_etopo: "FALSE"
+      TIMING: "TRUE"
+    entrypoint: "uvicorn"
+    working_dir: "/app"
+    command: ["responseLocal:app", "--host", "0.0.0.0", "--port", "8083"]
+    restart: unless-stopped

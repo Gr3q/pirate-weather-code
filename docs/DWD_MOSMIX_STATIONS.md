@@ -61,7 +61,8 @@ When a user makes a request to the API with version >= 2 and DWD MOSMIX data is 
 
 ### Requirements
 
-- Station map must exist at: `{save_dir}/{ingest_version}/DWD_MOSMIX_stations.pickle`
+- Station map must exist at: `{save_dir}/DWD_MOSMIX_stations.pickle`
+  - The ingest writes it to `{forecast_path}/{ingest_version}/DWD_MOSMIX_stations.pickle`, so in local mode link it into the API's `save_dir` (see [SELF_HOSTING.md](SELF_HOSTING.md) — same layout reconciliation as the model stores).
 - Request must use version >= 2 (add `?version=2` to the URL)
 - DWD MOSMIX data must be available for the requested location
 
