@@ -8,7 +8,7 @@ This guide covers running the ingest pipeline and API from this repository on yo
 | --- | --- |
 | Forecast requests (`/forecast/...`) | Yes |
 | Time machine / historic requests | No — local historic ingest output is never wired to the reader |
-| Alerts | Global alerts (MeteoAlarm etc.) via the `wmo_alerts_ingest` service present in all local compose files; NWS alerts (US) require the `nws_alerts_ingest` service, which the UK compose omits |
+| Alerts | Global alerts (MeteoAlarm etc.) via the `wmo_alerts_ingest` service in both compose files; NWS alerts (US) via the `nws_alerts_ingest` service, which regional subsets outside North America drop |
 | API key validation | Not enforced — any value works in the URL. The key is only used as an S3 credential in `TESTING` mode |
 | Model coverage | Whatever you ingest. Stores for models you don't run are simply absent, and the API falls back per the [source priority rules](forecast-source-selection/README.md) |
 
@@ -30,7 +30,7 @@ Ofelia (scheduler)
 | Component | Memory | Disk | Notes |
 | --- | --- | --- | --- |
 | Ingest (all models, sequential) | ≥32 GB free | ≥200 GB working | Peak during processing of the largest global models |
-| Ingest (regional subset, e.g. UK) | less | less | Scales with the models you keep; the [UK compose](../pirate-compose_oph.local.uk.yml) runs 3 global models |
+| Ingest (regional subset, e.g. UK) | less | less | Scales with the models you keep |
 | API response container | minimal | ~50 GB | Serves the Zarr stores; local NVMe/SSD strongly recommended (production serves from NVMe for IOPS) |
 
 - Use **ext4** for the storage volumes; large ingest runs are significantly faster and more reliable than on NTFS mounts.
@@ -47,8 +47,8 @@ docker build -f Docker/pirate-ingest-dockerfile -t pirateingest:latest .
 docker build -f Docker/pirate-api-dockerfile -t pirate-zarr-api:latest .
 
 # Storage locations (any fast ext4 filesystem)
-cp .env.example .env   # set PW_WEATHER_ROOT and PW_WORK_ROOT
-mkdir -p /mnt/pirate-weather/Weather /mnt/pirate-weather/Work
+cp .env.example .env   # set PW_WEATHER_ROOT=/mnt/pirate-weather/Weather, PW_WORK_ROOT=/mnt/pirate-weather/Weather/work
+mkdir -p /mnt/pirate-weather/Weather/work
 
 docker compose -f pirate-compose_oph.local.yml up -d
 ```
@@ -63,8 +63,6 @@ Keep both storage roots on the same filesystem, with Work nested inside Weather:
 <PW_WEATHER_ROOT>/          ← PW_WEATHER_ROOT, mounted at /data
 <PW_WEATHER_ROOT>/work/     ← PW_WORK_ROOT, mounted at /tmp
 ```
-
-See Troubleshooting for the failure signature if you keep them separate.
 
 ### Bridging ingest output to the API (required)
 
@@ -84,6 +82,8 @@ while the API reader opens flat stores:
 
 ```bash
 cd "$PW_WEATHER_ROOT"
+ln -s Prod/WMO_Alerts/v30/WMO_Alerts.zarr WMO_Alerts.zarr
+ln -s Prod/NWS_Alerts/v30/NWS_Alerts.zarr NWS_Alerts.zarr
 ln -s Prod/GFS/v30/GFS.zarr       GFS.zarr
 ln -s Prod/GEFS/v30/GEFS.zarr     GEFS.zarr
 ln -s Prod/ECMWF/v30/ECMWF.zarr   ECMWF.zarr
@@ -94,7 +94,7 @@ Then **restart the API container** — stores are read once at startup, so an AP
 
 ## Regional subsets
 
-The default local compose ingests nine models, six of which (NBM, SubH, HRRR, HRRR-6H, RTMA-RU, NWS alerts) cover only North America. For other regions, trim the compose to the models that cover you — see [`pirate-compose_oph.local.uk.yml`](../pirate-compose_oph.local.uk.yml) for a worked UK example (GFS + GEFS + ECMWF only).
+The default local compose ingests nine models, six of which (NBM, SubH, HRRR, HRRR-6H, RTMA-RU, NWS alerts) cover only North America. For other regions, copy `pirate-compose_oph.local.yml` and remove the ingest services for the models that don't cover you:
 
 Trimming a model means removing, in `pirate-compose_oph.local.yml`:
 
@@ -104,7 +104,7 @@ Trimming a model means removing, in `pirate-compose_oph.local.yml`:
 
 Which models cover which region is documented in [`docs/forecast-source-selection/README.md`](forecast-source-selection/README.md). Note that several ingest scripts (`DWD_Mosmix`, `GDPS`, `GEPS`, `HRDPS`, `REPS`, `SILAM`, `RAQDPS`, `URMA`, `AIGFS`, `AIGEFS`, `ECMWF_AIFS`) exist in `API/` but have **no compose service** — `API/DWD_Mosmix_Local_Ingest.py` is the natural addition for European users and can be wired by copying any existing service block.
 
-`API/WMO_Alerts_Local.py` is wired into all local compose files as `wmo_alerts_ingest`. The API image layout is already wired correctly in the compose files here: the repository root is mounted at `/app` and the module path is `API.responseLocal:app`. If you write your own service definition, mount the repo root over `/app` rather than only the `API/` directory.
+`API/WMO_Alerts_Local.py` is wired into both compose files as `wmo_alerts_ingest`. The API image layout is already wired correctly in the compose files here: the repository root is mounted at `/app` and the module path is `API.responseLocal:app`. If you write your own service definition, mount the repo root over `/app` rather than only the `API/` directory.
 
 ## Running only the API (response development)
 
@@ -168,13 +168,13 @@ http://<host>:8083/forecast/<apikey>/<lat>,<lon>
 
 - Any string works as `<apikey>`; the local API does not validate it.
 - The [Home Assistant Pirate Weather integration](https://github.com/Pirate-Weather/pirate-weather-ha) supports a custom endpoint — set it to `http://<host>:8083` and the integration works unchanged.
-- Models you did not ingest simply don't appear: missing models yield empty `alerts`, and `flags.sourceTimes` only contains the models you run.
+- Models you did not ingest simply don't appear, and `flags.sourceTimes` only contains the models you run. Missing `NWS_Alerts` yields empty `alerts`; WMO alerts come from the linked `WMO_Alerts` store instead.
 
 ## Troubleshooting
 
 - **`docker compose up` hangs or Ofelia exits immediately** — one ingest service in the `depends_on` chain failed. Check each ingest container's logs; the chain runs strictly sequentially, so the first failure gates everything.
 - **API starts but returns empty or errors** — the stores weren't present (or weren't linked) when the container started. Fix the layout, then restart the container; stores are only loaded at startup.
-- **`<MODEL> not found` log lines at startup** — normal if you intentionally didn't ingest that model; the API falls back to the sources you do have.
+- **`GFS_Zarr not found: /data/GFS.zarr`-style log lines at startup** — normal if you intentionally didn't ingest that model; the API falls back to the sources you do have.
 - **Requests fail with a missing-ETOPO error** — set `use_etopo=FALSE` (note the lowercase name; `useETOPO` is silently ignored) or provide the ETOPO store in `save_dir`.
 - **Ingest services with no output for a while** — check `docker stats`: active downloading shows high container NET I/O; idle CPU with steady memory means a retry backoff window, not a hang.
 

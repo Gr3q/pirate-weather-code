@@ -136,7 +136,7 @@ cp .env.example .env
 
 2. Create storage folders:
 ```
-mkdir -p /mnt/pirate-weather/Weather /mnt/pirate-weather/Work
+mkdir -p /mnt/pirate-weather/Weather/work
 ```
 
 3. Build and run:
@@ -147,9 +147,9 @@ docker build -f Docker/pirate-ingest-dockerfile -t pirateingest:latest .
 docker compose -f pirate-compose_oph.local.yml up -d
 ```
 
-This runs local ingest jobs and writes output under the SSD-backed `Weather` and `Work` folders without requiring `PW_API`.
+This runs local ingest jobs and writes output under the SSD-backed `Weather` folder (with `work` nested inside it) without requiring `PW_API`.
 
-The full walkthrough — including the required step to connect the ingest output to an API server, running a regional subset (`pirate-compose_oph.local.uk.yml`, UK example), and troubleshooting — is in the [self-hosting guide](docs/SELF_HOSTING.md).
+The full walkthrough — including the required step to connect the ingest output to an API server, running a regional subset, and troubleshooting — is in the [self-hosting guide](docs/SELF_HOSTING.md).
 
 **Filesystem note (Ubuntu/Linux):** prefer `ext4` for `PW_WEATHER_ROOT` and `PW_WORK_ROOT`. Large ingest runs are significantly faster and more reliable on `ext4` than `NTFS` mounts.
 
@@ -160,15 +160,13 @@ For additional details on contributing to this project, check out the [docs fold
 Running a weather API for the entire planet isn't a trivial task, and accordingly, this service requires a pretty hefty set of resources, although I hope to reduce this in the future! At least 32 GB of free (not total) memory are required for the ingest processing, as well as at least 200 GB of working disk space. The docker images are also ARM only at the moment, but there's no technical reason why they shouldn't generate on x64 machines as well. 
 However, the response script/container is significantly lighter, requiring only a vanilla Python/ Node environment, minimal memory, and ~50 GB of space.
 
-These requirements scale down with regional subsets — see the [self-hosting guide](docs/SELF_HOSTING.md) for per-component details and a UK-only example.
+These requirements scale down with regional subsets — see the [self-hosting guide](docs/SELF_HOSTING.md) for per-component details.
 
 ### Response Dev Tooling Setup
 The most interesting part of this project is the response script, which takes the raw model data and generates the API response. While spinning up the entire API is one way to work on this, it's much easier to simply run either the docker container or a virtual Python environment and use the existing zip files!
 
 ##### Docker
-Two options are available to do this via Docker- either download a static copy of the forecast files and reference those, or access the live Zarr files directly. Live access is much easier, but does require an API key since the files are hosted on Pirate Weather's AWS instance.
-
-For Option 1:
+To do this via Docker, access the live Zarr files directly. This requires an API key since the files are hosted on Pirate Weather's AWS instance.
 
 ```
 docker run -e STAGE=TESTING -e PW_API=<APIKEY> -e save_type=S3 -p 8083:8083 public.ecr.aws/j9v4j3c7/pirate-alpine-zarr:dev responseLocal:app --host 0.0.0.0 --port 8083 

@@ -69,7 +69,7 @@ services:
         condition: service_completed_successfully
                                                                                                             
 
-  # WMO Alerts Ingest (alerts store is required, see docs/SELF_HOSTING.md)
+  # WMO Alerts Ingest
   wmo_alerts_ingest:
     <<: *dns_defaults
     container_name: pirate-ingest-wmo-alerts
