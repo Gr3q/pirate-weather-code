@@ -53,7 +53,18 @@ mkdir -p /mnt/pirate-weather/Weather /mnt/pirate-weather/Work
 docker compose -f pirate-compose_oph.local.yml up -d
 ```
 
-The first cycle downloads and processes the initial batch of models and takes on the order of an hour; later cycles are scheduled by Ofelia.
+The first cycle downloads and processes the initial batch of models and takes on the order of an hour; later cycles are scheduled by Ofelia. GFS alone downloads several GB — a partially complete cycle can take substantially longer on slower links, and transient download shortfalls trigger Herbie's retry loop (see Troubleshooting).
+
+### Storage layout note
+
+Keep both storage roots on the same filesystem if you can, but be aware that ingest scripts move files between them with `os.rename`, which fails across distinct mount points (`Invalid cross-device link`) even on the same physical disk. A single root with Work nested inside Weather avoids the issue entirely:
+
+```text
+<PW_WEATHER_ROOT>/          ← PW_WEATHER_ROOT, mounted at /data
+<PW_WEATHER_ROOT>/work/     ← PW_WORK_ROOT, mounted at /tmp
+```
+
+See Troubleshooting for the failure signature if you keep them separate.
 
 ### Bridging ingest output to the API (required)
 
@@ -91,7 +102,11 @@ Trimming a model means removing, in `pirate-compose_oph.local.yml`:
 2. its `ofelia.job-run.<name>` labels, and
 3. every reference to it in `depends_on` lists — Ofelia depends on all ingest services, and each ingest service depends on the whole chain before it. Removing a service without cleaning these up prevents the stack from starting.
 
-Which models cover which region is documented in [`docs/forecast-source-selection/README.md`](forecast-source-selection/README.md). Note that several ingest scripts (`DWD_Mosmix`, `GDPS`, `GEPS`, `HRDPS`, `REPS`, `SILAM`, `RAQDPS`, `URMA`, `AIGFS`, `AIGEFS`, `ECMWF_AIFS`, `WMO_Alerts`) exist in `API/` but have **no compose service** — `API/DWD_Mosmix_Local_Ingest.py` is the natural addition for European users and can be wired by copying any existing service block.
+Which models cover which region is documented in [`docs/forecast-source-selection/README.md`](forecast-source-selection/README.md). Note that several ingest scripts (`DWD_Mosmix`, `GDPS`, `GEPS`, `HRDPS`, `REPS`, `SILAM`, `RAQDPS`, `URMA`, `AIGFS`, `AIGEFS`, `ECMWF_AIFS`) exist in `API/` but have **no compose service** — `API/DWD_Mosmix_Local_Ingest.py` is the natural addition for European users and can be wired by copying any existing service block.
+
+One script is not optional: `API/WMO_Alerts_Local.py` (global alerts) must run for the API to answer requests at all — the alerts store is read unguarded, so its absence 500s every request (see Troubleshooting). The UK compose wires it first in the chain because it completes in about a minute.
+
+The API image layout matters when wiring the response service: the image expects the repository root at `/app` and the module path is `API.responseLocal:app`. Mount the repo root over `/app` to run the checked-out code; mounting only the `API/` directory breaks the import path.
 
 ## Running only the API (response development)
 
@@ -163,3 +178,8 @@ http://<host>:8083/forecast/<apikey>/<lat>,<lon>
 - **API starts but returns empty or errors** — the stores weren't present (or weren't linked) when the container started. Fix the layout, then restart the container; stores are only loaded at startup.
 - **`<MODEL> not found` log lines at startup** — normal if you intentionally didn't ingest that model; the API falls back to the sources you do have.
 - **Requests fail with a missing-ETOPO error** — set `use_etopo=FALSE` (note the lowercase name; `useETOPO` is silently ignored) or provide the ETOPO store in `save_dir`.
+- **Every request returns 500 with a `wmo_alerts ... 'NoneType' object is not subscriptable` traceback** — alerts are treated as a required store: the API reads the WMO alerts array without a guard for missing stores. Run the WMO alerts ingest (`API/WMO_Alerts_Local.py`) and link its store like any model store. Zero ingested models instead produces a 400 ("No forecast model sources are available").
+- **Ingest fails with `OSError: [Errno 18] Invalid cross-device link` on `os.rename`** — the historic-loop ingest scripts rename the temp Zarr from the Work volume to the Weather volume; Docker bind mounts are distinct mount points even on the same disk, so `os.rename` fails across them. Workaround: both roots on the same filesystem does **not** help; either mount Work and Weather as one directory tree (Work nested inside Weather) or replace the `os.rename(...)` calls with `shutil.move(...)` (see discussion #650).
+- **Ingest logs `Expected N downloaded ... paths but got N-1` and sits idle** — a Herbie batch download came up one or more files short; the validator treats the whole batch as failed and retries from scratch. Attempts, sleep and backoff are controlled by `herbie_download_retries` and `herbie_retry_sleep_seconds`. Single missing forecast-hours are not retried individually.
+- **The API container crash-loops with `ModuleNotFoundError: No module named 'API'`** — the API image expects the repository layout at `/app` (module path `API.responseLocal:app`). Mount the repo root over `/app`, not the `API/` directory itself, and keep the image's default module path.
+- **Ingest services with no output for a while** — check `docker stats`: active downloading shows high container NET I/O, idle CPU with steady memory means a retry backoff window, not a hang.
