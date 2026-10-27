@@ -292,12 +292,7 @@ services:
       gefs_ingest:
         condition: service_completed_successfully
 
-  # Consistently running API server
-  # Reads the Zarr stores written by the ingest jobs from save_dir (the Weather root).
-  # Stores load once at startup — restart this container after the first ingest cycle.
-  # See docs/SELF_HOSTING.md for the store layout and the symlink bridging step.
-  # The repo is mounted over /app so the container runs the checked-out code;
-  # the image's module path is API.responseLocal:app (repo root = /app).
+  # API server: repo mounted over /app to run the checked-out code.
   api_server:
     image: pirate-zarr-api:latest
     build:
