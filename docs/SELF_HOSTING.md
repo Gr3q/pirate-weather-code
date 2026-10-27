@@ -106,7 +106,7 @@ Which models cover which region is documented in [`docs/forecast-source-selectio
 
 One script is not optional: `API/WMO_Alerts_Local.py` (global alerts) must run for the API to answer requests at all — the alerts store is read unguarded, so its absence 500s every request (see Troubleshooting). The UK compose wires it first in the chain because it completes in about a minute.
 
-The API image layout matters when wiring the response service: the image expects the repository root at `/app` and the module path is `API.responseLocal:app`. Mount the repo root over `/app` to run the checked-out code; mounting only the `API/` directory breaks the import path.
+The API image layout is already wired correctly in the compose files here: the repository root is mounted at `/app` and the module path is `API.responseLocal:app`. If you write your own service definition, mount the repo root over `/app` rather than only the `API/` directory.
 
 ## Running only the API (response development)
 
@@ -197,7 +197,3 @@ The historic-loop ingest scripts move the temp Zarr from the Work volume to the 
 ### Herbie downloads retry whole batches
 
 The GRIB download validator treats a batch as failed when it is short by even one file ("Expected N downloaded ... paths but got N-1"), and the retry re-downloads the entire batch rather than only the missing files. Attempts and backoff are controlled by `herbie_download_retries` and `herbie_retry_sleep_seconds`; a persistently incomplete upstream file can stall a model for the full retry budget. A single retry cycle takes on the order of tens of minutes for GFS.
-
-### API image layout: repo root at /app
-
-The API image expects the repository root at `/app` and serves `API.responseLocal:app`. Mount the repo root over `/app` to run the checked-out code; mounting only the `API/` directory breaks the import path (`ModuleNotFoundError: No module named 'API'`). The compose files in this repository are wired accordingly.
