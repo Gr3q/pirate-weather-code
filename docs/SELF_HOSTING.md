@@ -53,7 +53,18 @@ mkdir -p /mnt/pirate-weather/Weather /mnt/pirate-weather/Work
 docker compose -f pirate-compose_oph.local.yml up -d
 ```
 
-The first cycle downloads and processes the initial batch of models and takes on the order of an hour; later cycles are scheduled by Ofelia.
+The first cycle downloads and processes the initial batch of models and takes on the order of an hour; later cycles are scheduled by Ofelia. GFS alone downloads several GB — a partially complete cycle can take substantially longer on slower links, and transient download shortfalls trigger Herbie's retry loop (see Troubleshooting).
+
+### Storage layout note
+
+Keep both storage roots on the same filesystem if you can, but be aware that ingest scripts move files between them with `os.rename`, which fails across distinct mount points (`Invalid cross-device link`) even on the same physical disk. A single root with Work nested inside Weather avoids the issue entirely:
+
+```text
+<PW_WEATHER_ROOT>/          ← PW_WEATHER_ROOT, mounted at /data
+<PW_WEATHER_ROOT>/work/     ← PW_WORK_ROOT, mounted at /tmp
+```
+
+See Troubleshooting for the failure signature if you keep them separate.
 
 ### Bridging ingest output to the API (required)
 
@@ -91,7 +102,11 @@ Trimming a model means removing, in `pirate-compose_oph.local.yml`:
 2. its `ofelia.job-run.<name>` labels, and
 3. every reference to it in `depends_on` lists — Ofelia depends on all ingest services, and each ingest service depends on the whole chain before it. Removing a service without cleaning these up prevents the stack from starting.
 
-Which models cover which region is documented in [`docs/forecast-source-selection/README.md`](forecast-source-selection/README.md). Note that several ingest scripts (`DWD_Mosmix`, `GDPS`, `GEPS`, `HRDPS`, `REPS`, `SILAM`, `RAQDPS`, `URMA`, `AIGFS`, `AIGEFS`, `ECMWF_AIFS`, `WMO_Alerts`) exist in `API/` but have **no compose service** — `API/DWD_Mosmix_Local_Ingest.py` is the natural addition for European users and can be wired by copying any existing service block.
+Which models cover which region is documented in [`docs/forecast-source-selection/README.md`](forecast-source-selection/README.md). Note that several ingest scripts (`DWD_Mosmix`, `GDPS`, `GEPS`, `HRDPS`, `REPS`, `SILAM`, `RAQDPS`, `URMA`, `AIGFS`, `AIGEFS`, `ECMWF_AIFS`) exist in `API/` but have **no compose service** — `API/DWD_Mosmix_Local_Ingest.py` is the natural addition for European users and can be wired by copying any existing service block.
+
+One script is not optional: `API/WMO_Alerts_Local.py` (global alerts) must run for the API to answer requests at all — the alerts store is read unguarded, so its absence 500s every request (see Troubleshooting). The UK compose wires it first in the chain because it completes in about a minute.
+
+The API image layout matters when wiring the response service: the image expects the repository root at `/app` and the module path is `API.responseLocal:app`. Mount the repo root over `/app` to run the checked-out code; mounting only the `API/` directory breaks the import path.
 
 ## Running only the API (response development)
 
@@ -163,3 +178,26 @@ http://<host>:8083/forecast/<apikey>/<lat>,<lon>
 - **API starts but returns empty or errors** — the stores weren't present (or weren't linked) when the container started. Fix the layout, then restart the container; stores are only loaded at startup.
 - **`<MODEL> not found` log lines at startup** — normal if you intentionally didn't ingest that model; the API falls back to the sources you do have.
 - **Requests fail with a missing-ETOPO error** — set `use_etopo=FALSE` (note the lowercase name; `useETOPO` is silently ignored) or provide the ETOPO store in `save_dir`.
+- **Ingest services with no output for a while** — check `docker stats`: active downloading shows high container NET I/O; idle CPU with steady memory means a retry backoff window, not a hang.
+
+## Requirements and constraints
+
+Behaviors of the current code that constrain how a local instance must be set up, with workarounds where they exist.
+
+### Alerts store is required
+
+The API reads the WMO alerts array without a guard for missing stores, so without a `WMO_Alerts.zarr` store every `/forecast` request fails with a 500 (`'NoneType' object is not subscriptable` in `grid_indexing.py`). Run `API/WMO_Alerts_Local.py` and link its store like any model store — it completes in about a minute and provides global alerts. With zero model stores ingested, requests return a 400 ("No forecast model sources are available").
+
+Workaround without alerts: `?exclude=alerts` skips the alerts read, but standard clients do not send it by default.
+
+### Work and Weather roots must share a mount point
+
+The historic-loop ingest scripts move the temp Zarr from the Work volume to the Weather volume with `os.rename`, which fails across distinct mount points (`OSError: [Errno 18] Invalid cross-device link`) even when both are on the same physical disk — Docker bind mounts are separate mount points regardless of the underlying filesystem. Nest the Work root inside the Weather root (single mount; see [Storage layout note](#storage-layout-note)) or replace the `os.rename` calls with `shutil.move` (the approach used in discussion #650).
+
+### Herbie downloads retry whole batches
+
+The GRIB download validator treats a batch as failed when it is short by even one file ("Expected N downloaded ... paths but got N-1"), and the retry re-downloads the entire batch rather than only the missing files. Attempts and backoff are controlled by `herbie_download_retries` and `herbie_retry_sleep_seconds`; a persistently incomplete upstream file can stall a model for the full retry budget. A single retry cycle takes on the order of tens of minutes for GFS.
+
+### API image layout: repo root at /app
+
+The API image expects the repository root at `/app` and serves `API.responseLocal:app`. Mount the repo root over `/app` to run the checked-out code; mounting only the `API/` directory breaks the import path (`ModuleNotFoundError: No module named 'API'`). The compose files in this repository are wired accordingly.
