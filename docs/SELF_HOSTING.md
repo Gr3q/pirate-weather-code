@@ -8,7 +8,7 @@ This guide covers running the ingest pipeline and API from this repository on yo
 | --- | --- |
 | Forecast requests (`/forecast/...`) | Yes |
 | Time machine / historic requests | No — local historic ingest output is never wired to the reader |
-| Alerts | NWS alerts (US) only. `API/WMO_Alerts_Local.py` (global alerts) has no compose service |
+| Alerts | Global alerts (MeteoAlarm etc.) via the `wmo_alerts_ingest` service present in all local compose files; NWS alerts (US) require the `nws_alerts_ingest` service, which the UK compose omits |
 | API key validation | Not enforced — any value works in the URL. The key is only used as an S3 credential in `TESTING` mode |
 | Model coverage | Whatever you ingest. Stores for models you don't run are simply absent, and the API falls back per the [source priority rules](forecast-source-selection/README.md) |
 
@@ -104,9 +104,7 @@ Trimming a model means removing, in `pirate-compose_oph.local.yml`:
 
 Which models cover which region is documented in [`docs/forecast-source-selection/README.md`](forecast-source-selection/README.md). Note that several ingest scripts (`DWD_Mosmix`, `GDPS`, `GEPS`, `HRDPS`, `REPS`, `SILAM`, `RAQDPS`, `URMA`, `AIGFS`, `AIGEFS`, `ECMWF_AIFS`) exist in `API/` but have **no compose service** — `API/DWD_Mosmix_Local_Ingest.py` is the natural addition for European users and can be wired by copying any existing service block.
 
-One script is not optional: `API/WMO_Alerts_Local.py` (global alerts) must run for the API to answer requests at all — the alerts store is read unguarded, so its absence 500s every request (see Troubleshooting). The UK compose wires it first in the chain because it completes in about a minute.
-
-The API image layout is already wired correctly in the compose files here: the repository root is mounted at `/app` and the module path is `API.responseLocal:app`. If you write your own service definition, mount the repo root over `/app` rather than only the `API/` directory.
+`API/WMO_Alerts_Local.py` is wired into all local compose files as `wmo_alerts_ingest` (see [Requirements and constraints](#requirements-and-constraints) — the alerts store is required). The API image layout is already wired correctly in the compose files here: the repository root is mounted at `/app` and the module path is `API.responseLocal:app`. If you write your own service definition, mount the repo root over `/app` rather than only the `API/` directory.
 
 ## Running only the API (response development)
 
@@ -186,7 +184,7 @@ Behaviors of the current code that constrain how a local instance must be set up
 
 ### Alerts store is required
 
-The API reads the WMO alerts array without a guard for missing stores, so without a `WMO_Alerts.zarr` store every `/forecast` request fails with a 500 (`'NoneType' object is not subscriptable` in `grid_indexing.py`). Run `API/WMO_Alerts_Local.py` and link its store like any model store — it completes in about a minute and provides global alerts. With zero model stores ingested, requests return a 400 ("No forecast model sources are available").
+The API reads the WMO alerts array without a guard for missing stores, so without a `WMO_Alerts.zarr` store every `/forecast` request fails with a 500 (`'NoneType' object is not subscriptable` in `grid_indexing.py`). The compose files run `API/WMO_Alerts_Local.py` as `wmo_alerts_ingest` for this reason — link its store like any model store after the first cycle; it completes in about a minute and provides global alerts. With zero model stores ingested, requests return a 400 ("No forecast model sources are available").
 
 Workaround without alerts: `?exclude=alerts` skips the alerts read, but standard clients do not send it by default.
 
