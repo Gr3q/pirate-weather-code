@@ -57,7 +57,7 @@ The first cycle downloads and processes the initial batch of models and takes on
 
 ### Storage layout note
 
-Keep both storage roots on the same filesystem if you can, but be aware that ingest scripts move files between them with `os.rename`, which fails across distinct mount points (`Invalid cross-device link`) even on the same physical disk. A single root with Work nested inside Weather avoids the issue entirely:
+Keep both storage roots on the same filesystem, with Work nested inside Weather:
 
 ```text
 <PW_WEATHER_ROOT>/          ← PW_WEATHER_ROOT, mounted at /data
@@ -181,10 +181,6 @@ http://<host>:8083/forecast/<apikey>/<lat>,<lon>
 ## Requirements and constraints
 
 Behaviors of the current code that constrain how a local instance must be set up, with workarounds where they exist.
-
-### Work and Weather roots must share a mount point
-
-The historic-loop ingest scripts move the temp Zarr from the Work volume to the Weather volume with `os.rename`, which fails across distinct mount points (`OSError: [Errno 18] Invalid cross-device link`) even when both are on the same physical disk — Docker bind mounts are separate mount points regardless of the underlying filesystem. Nest the Work root inside the Weather root (single mount; see [Storage layout note](#storage-layout-note)) or replace the `os.rename` calls with `shutil.move` (the approach used in discussion #650).
 
 ### Herbie downloads retry whole batches
 
