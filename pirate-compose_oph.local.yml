@@ -296,6 +296,8 @@ services:
   # Reads the Zarr stores written by the ingest jobs from save_dir (the Weather root).
   # Stores load once at startup — restart this container after the first ingest cycle.
   # See docs/SELF_HOSTING.md for the store layout and the symlink bridging step.
+  # The repo is mounted over /app so the container runs the checked-out code;
+  # the image's module path is API.responseLocal:app (repo root = /app).
   api_server:
     image: pirate-zarr-api:latest
     build:
@@ -305,7 +307,7 @@ services:
     ports:
       - "8083:8083"
     volumes:
-      - ./API:/app
+      - .:/app
       - ${PW_WEATHER_ROOT:-/mnt/pirate-weather/Weather}:/data:ro
     environment:
       STAGE: "PROD"
@@ -313,7 +315,5 @@ services:
       save_dir: "/data"
       use_etopo: "FALSE"
       TIMING: "TRUE"
-    entrypoint: "uvicorn"
-    working_dir: "/app"
-    command: ["responseLocal:app", "--host", "0.0.0.0", "--port", "8083"]
+    command: ["API.responseLocal:app", "--host", "0.0.0.0", "--port", "8083"]
     restart: unless-stopped
