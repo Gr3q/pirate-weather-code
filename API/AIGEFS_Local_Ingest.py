@@ -556,7 +556,7 @@ for i in range(his_period, -1, -6):
             s3=s3,
         )
     else:
-        os.rename(hist_tmp_zarr_path, local_path)
+        shutil.move(hist_tmp_zarr_path, local_path)
         done_file = local_path.replace(".zarr", ".done")
         with open(done_file, "w") as f:
             f.write("Done")

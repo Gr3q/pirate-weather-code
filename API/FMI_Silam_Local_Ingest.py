@@ -537,7 +537,7 @@ for hours_offset in range(hisPeriod, 0, -HISTORIC_STEP_HOURS):
             s3=s3,
         )
     else:
-        os.rename(hist_tmp_zarr_path, local_path)
+        shutil.move(hist_tmp_zarr_path, local_path)
         done_file = local_path.replace(".zarr", ".done")
         with open(done_file, "w") as f:
             f.write("Done")

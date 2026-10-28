@@ -616,7 +616,7 @@ for i in range(his_period, 0, -12):
         )
     else:
         # Move to Local Path
-        os.rename(hist_process_path + "_GEPS_Hist_TMP.zarr", local_path)
+        shutil.move(hist_process_path + "_GEPS_Hist_TMP.zarr", local_path)
 
         done_file = local_path.replace(".zarr", ".done")
         with open(done_file, "w") as f:

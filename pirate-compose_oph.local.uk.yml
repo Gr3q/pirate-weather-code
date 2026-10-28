@@ -7,28 +7,15 @@ x-dns-defaults: &dns_defaults
       soft: 65535
       hard: 65535
 
-# UK-subset self-host: GFS + GEFS + ECMWF only (the global models that cover the UK).
-# US/Canada-only ingests (NBM, SubH, HRRR, HRRR-6H, RTMA-RU, NWS alerts) are not included.
-# Missing Zarr stores are tolerated by the API: update_zarr_store() logs "not found"
-# and falls back per the global/standard source priority (ECMWF IFS > GFS > ...).
-# Not wired locally: DWD MOSMIX, GDPS, GEPS (scripts exist in API/ but have no
-# compose service).
-#
-# Layout caveat: in save_type=Download mode the ingest jobs write
-# <PW_WEATHER_ROOT>/Prod/<MODEL>/<INGEST_VERSION_STR>/<MODEL>.zarr,
-# while the API reader expects flat <save_dir>/<MODEL>.zarr. Link the
-# stores into the Weather root after the first ingest cycle:
-#   ln -s Prod/GFS/v30/GFS.zarr     "$PW_WEATHER_ROOT/GFS.zarr"
-#   ln -s Prod/GEFS/v30/GEFS.zarr   "$PW_WEATHER_ROOT/GEFS.zarr"
-#   ln -s Prod/ECMWF/v30/ECMWF.zarr "$PW_WEATHER_ROOT/ECMWF.zarr"
-# and set save_dir to the Weather root (done below). Re-create the links if
-# INGEST_VERSION_STR changes in API/constants/shared_const.py.
-#
-# Before first run:
-#   docker build -f Docker/pirate-ingest-dockerfile -t pirateingest:latest .
-#   docker build -f Docker/pirate-api-dockerfile -t pirate-zarr-api:latest .
-#   mkdir -p /mnt/pirate-weather/Weather /mnt/pirate-weather/Work
-# Images are ARM-only upstream; building locally is required on x86_64.
+# UK-subset self-host: GFS + GEFS + ECMWF. Storage roots via .env (PW_WEATHER_ROOT, PW_WORK_ROOT).
+# Reader expects flat <PW_WEATHER_ROOT>/<MODEL>.zarr; link Prod/<MODEL>/<INGEST_VERSION_STR>/<MODEL>.zarr
+# (INGEST_VERSION_STR in API/constants/shared_const.py). See docs/SELF_HOSTING.md before first run.
+
+x-volumes: &volumes
+  volumes:
+    - ${PW_WEATHER_ROOT:?Set PW_WEATHER_ROOT in .env}:/data
+    - ${PW_WORK_ROOT:?Set PW_WORK_ROOT in .env}:/tmp
+
 services:
   # Ofelia for scheduling tasks
   ofelia:
@@ -38,6 +25,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     command: daemon --docker
     labels:
+      ofelia.job-run.wmo-alerts-ingest.schedule: "0 0,30 * * * *"
+      ofelia.job-run.wmo-alerts-ingest.container: "pirate-ingest-wmo-alerts"
+      ofelia.job-run.wmo-alerts-ingest.no-overlap: "true"
       ofelia.job-run.gfs-ingest.schedule: "0 10 5,11,17,23 * * *"
       ofelia.job-run.gfs-ingest.container: "pirate-ingest-gfs"
       ofelia.job-run.gfs-ingest.no-overlap: "true"
@@ -48,6 +38,8 @@ services:
       ofelia.job-run.ecmwf-ingest.container: "pirate-ingest-ecmwf"
       ofelia.job-run.ecmwf-ingest.no-overlap: "true"
     depends_on:
+      wmo_alerts_ingest:
+        condition: service_completed_successfully
       gfs_ingest:
         condition: service_completed_successfully
       gefs_ingest:
@@ -55,17 +47,29 @@ services:
       ecmwf_ingest:
         condition: service_completed_successfully
 
+  # WMO Alerts Ingest (alerts store is required, see docs/SELF_HOSTING.md)
+  wmo_alerts_ingest:
+    <<: [*dns_defaults, *volumes]
+    container_name: pirate-ingest-wmo-alerts
+    image: pirateingest:latest
+    environment:
+      wgrib2_path: "/build/wgrib2_build/bin/wgrib2 "
+      forecast_process_dir: "/tmp/Process/WMO_Alerts"
+      forecast_path: "/data/Prod/WMO_Alerts"
+      historic_path: "/data/Hist/WMO_Alerts"
+      save_type: "Download"
+      zarr_store_workers: "1"
+      zarr_async_concurrency: "1"
+    command: ["API/WMO_Alerts_Local.py"]
+
   # GFS Ingest
   gfs_ingest:
-    <<: *dns_defaults
+    <<: [*dns_defaults, *volumes]
     container_name: pirate-ingest-gfs
     image: pirateingest:latest
     build:
       context: .
       dockerfile: Docker/pirate-ingest-dockerfile
-    volumes:
-      - ${PW_WEATHER_ROOT:-/mnt/pirate-weather/Weather}:/data
-      - ${PW_WORK_ROOT:-/mnt/pirate-weather/Work}:/tmp
     environment:
       wgrib2_path: "/build/wgrib2_build/bin/wgrib2 "
       forecast_process_dir: "/tmp/Process/GFS"
@@ -78,12 +82,9 @@ services:
 
   # GEFS Ingest
   gefs_ingest:
-    <<: *dns_defaults
+    <<: [*dns_defaults, *volumes]
     container_name: pirate-ingest-gefs
     image: pirateingest:latest
-    volumes:
-      - ${PW_WEATHER_ROOT:-/mnt/pirate-weather/Weather}:/data
-      - ${PW_WORK_ROOT:-/mnt/pirate-weather/Work}:/tmp
     environment:
       wgrib2_path: "/build/wgrib2_build/bin/wgrib2 "
       forecast_process_dir: "/tmp/Process/GEFS"
@@ -99,12 +100,9 @@ services:
 
   # ECMWF Ingest
   ecmwf_ingest:
-    <<: *dns_defaults
+    <<: [*dns_defaults, *volumes]
     container_name: pirate-ingest-ecmwf
     image: pirateingest:latest
-    volumes:
-      - ${PW_WEATHER_ROOT:-/mnt/pirate-weather/Weather}:/data
-      - ${PW_WORK_ROOT:-/mnt/pirate-weather/Work}:/tmp
     environment:
       wgrib2_path: "/build/wgrib2_build/bin/wgrib2 "
       forecast_process_dir: "/tmp/Process/ECMWF"
@@ -120,10 +118,7 @@ services:
       gefs_ingest:
         condition: service_completed_successfully
 
-  # API server: reads the Zarr stores written by the ingest jobs.
-  # Built locally because the published images are ARM-only and this is x86_64.
-  # NOTE: paths verified against API/io/zarr_reader.py — local stores are read from
-  # save_dir (not s3_bucket), so PW_WEATHER_ROOT is mounted at /data.
+  # API server: repo mounted over /app to run the checked-out code.
   api_server:
     image: pirate-zarr-api:latest
     build:
@@ -133,15 +128,13 @@ services:
     ports:
       - "8083:8083"
     volumes:
-      - ./API:/app
-      - ${PW_WEATHER_ROOT:-/mnt/pirate-weather/Weather}:/data:ro
+      - .:/app
+      - ${PW_WEATHER_ROOT:?Set PW_WEATHER_ROOT in .env}:/data:ro
     environment:
       STAGE: "PROD"
       save_type: "Download"
       save_dir: "/data"
       use_etopo: "FALSE"
       TIMING: "TRUE"
-    entrypoint: "uvicorn"
-    working_dir: "/app"
-    command: ["responseLocal:app", "--host", "0.0.0.0", "--port", "8083"]
+    command: ["API.responseLocal:app", "--host", "0.0.0.0", "--port", "8083"]
     restart: unless-stopped
